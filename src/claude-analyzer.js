@@ -47,9 +47,9 @@ async function checkClaudeCLI() {
  */
 async function invokeClaude(prompt, projectPath, verbose = false, onProgress = null) {
   return new Promise((resolve, reject) => {
-    // Use claude CLI with --print for non-interactive output
-    // The -p flag passes the prompt directly
-    const args = ['--print', '-p', prompt];
+    // Use claude CLI with -p for non-interactive output
+    // Pass prompt as the final argument
+    const args = ['-p', prompt];
 
     if (verbose) {
       console.log('\n[DEBUG] Invoking Claude with prompt...\n');
@@ -59,7 +59,7 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
       cwd: projectPath,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
-      shell: true,
+      shell: false,
     });
 
     let stdout = '';
