@@ -578,12 +578,19 @@ Claude will:
   }
 
   const spinner = ora({
-    text: colors.secondary('Invoking Claude for deep analysis...\nThis may take 30-60 seconds.'),
+    text: colors.secondary('Invoking Claude for deep analysis...'),
     spinner: 'dots',
   }).start();
 
   try {
-    const analysis = await analyzeWithClaude(process.cwd(), options);
+    const analysis = await analyzeWithClaude(process.cwd(), {
+      ...options,
+      onProgress: (charsReceived) => {
+        spinner.text = colors.secondary(
+          `Analyzing with Claude... (${charsReceived.toLocaleString()} chars received)`
+        );
+      },
+    });
     spinner.succeed(colors.success('Analysis complete!'));
 
     // Display results

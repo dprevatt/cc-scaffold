@@ -9,7 +9,7 @@ import { hooks as hookTemplates } from './templates/hooks.js';
  * Invoke Claude CLI for deep project analysis
  */
 export async function analyzeWithClaude(projectPath = process.cwd(), options = {}) {
-  const { verbose = false } = options;
+  const { verbose = false, onProgress = null } = options;
 
   // First, check if Claude CLI is available
   const claudeAvailable = await checkClaudeCLI();
@@ -23,7 +23,7 @@ export async function analyzeWithClaude(projectPath = process.cwd(), options = {
   const prompt = buildAnalysisPrompt(projectPath);
 
   // Shell out to Claude
-  const result = await invokeClaude(prompt, projectPath, verbose);
+  const result = await invokeClaude(prompt, projectPath, verbose, onProgress);
 
   // Parse Claude's response
   const analysis = parseAnalysisResponse(result);
@@ -45,7 +45,7 @@ async function checkClaudeCLI() {
 /**
  * Shell out to Claude CLI with the analysis prompt
  */
-async function invokeClaude(prompt, projectPath, verbose = false) {
+async function invokeClaude(prompt, projectPath, verbose = false, onProgress = null) {
   return new Promise((resolve, reject) => {
     // Use claude CLI with --print for non-interactive output
     // The -p flag passes the prompt directly
@@ -64,16 +64,25 @@ async function invokeClaude(prompt, projectPath, verbose = false) {
 
     let stdout = '';
     let stderr = '';
+    let lastActivity = Date.now();
+    let charsReceived = 0;
 
     claude.stdout.on('data', (data) => {
-      stdout += data.toString();
+      const text = data.toString();
+      stdout += text;
+      charsReceived += text.length;
+      lastActivity = Date.now();
+
       if (verbose) {
         process.stdout.write(data);
+      } else if (onProgress) {
+        onProgress(charsReceived, text);
       }
     });
 
     claude.stderr.on('data', (data) => {
       stderr += data.toString();
+      lastActivity = Date.now();
     });
 
     claude.on('close', (code) => {
@@ -88,11 +97,25 @@ async function invokeClaude(prompt, projectPath, verbose = false) {
       reject(new Error(`Failed to invoke Claude: ${err.message}`));
     });
 
-    // Set a timeout of 5 minutes
+    // Set a timeout of 5 minutes, but check for activity
+    const timeoutMs = 5 * 60 * 1000;
+    const activityCheckMs = 30 * 1000; // 30 seconds without activity = stalled
+
+    const checkActivity = setInterval(() => {
+      const idleTime = Date.now() - lastActivity;
+      if (idleTime > activityCheckMs && charsReceived === 0) {
+        // No output received and idle for 30+ seconds - likely stalled
+        clearInterval(checkActivity);
+        claude.kill();
+        reject(new Error('Claude analysis appears stalled (no output received). Try running with --verbose or check if Claude CLI is working.'));
+      }
+    }, 10000);
+
     setTimeout(() => {
+      clearInterval(checkActivity);
       claude.kill();
-      reject(new Error('Claude analysis timed out after 5 minutes'));
-    }, 5 * 60 * 1000);
+      reject(new Error(`Claude analysis timed out after 5 minutes. Received ${charsReceived} chars before timeout.`));
+    }, timeoutMs);
   });
 }
 
