@@ -5,10 +5,13 @@ Interactive CLI for scaffolding Claude Code skills, agents, and hooks with intel
 ## Features
 
 - **Interactive Setup** - Guided wizard for configuring Claude Code for your project
+- **Auto-Scan Detection** - Automatically detect languages, frameworks, databases, and architecture patterns
+- **Deep Analysis** - Claude-powered analysis of your codebase for intelligent recommendations
 - **Smart Recommendations** - Analyzes your project context to suggest relevant components
 - **16 Quality Skills** - Pre-built skills for code review, testing, security, documentation, and more
 - **10 Specialized Agents** - Autonomous agents for architecture, debugging, refactoring, and more
 - **10 Lifecycle Hooks** - Automated quality gates, linting, formatting, and safety checks
+- **Configuration Merging** - Safely update existing `.claude/` configurations with backup support
 - **Beautiful CLI** - Colorful output with gradients, spinners, and styled boxes
 
 ## Installation
@@ -36,6 +39,46 @@ This will:
 2. Analyze your technology stack and architecture
 3. Recommend relevant skills, agents, and hooks
 4. Generate a complete `.claude/` directory structure
+
+### Initialize with Auto-Scan
+
+```bash
+cc-scaffold init --scan
+```
+
+Automatically detects your project's:
+- Languages (JavaScript, TypeScript, Python, C#, Go, Rust, Java)
+- Frameworks (React, Angular, Next.js, .NET, Django, FastAPI, etc.)
+- Databases (PostgreSQL, MySQL, MongoDB, Redis)
+- Architecture patterns (Clean Architecture, CQRS, Vertical Slice)
+- Existing `.claude/` configuration
+
+The wizard will pre-fill options based on detected characteristics.
+
+### Deep Project Analysis
+
+```bash
+cc-scaffold analyze           # Analyze with Claude
+cc-scaffold analyze --fix     # Analyze and auto-apply fixes
+cc-scaffold analyze --verbose # Show detailed output
+```
+
+Invokes Claude to deeply analyze your codebase and:
+- Understand your project structure and patterns
+- Examine existing `.claude/` configuration for gaps
+- Provide intelligent, project-specific recommendations
+- Suggest custom components tailored to your codebase
+
+### Quick Configuration Audit
+
+```bash
+cc-scaffold audit
+```
+
+Quickly validates your existing `.claude/` configuration:
+- Checks for missing or malformed files
+- Verifies hook scripts are executable
+- Reports errors, warnings, and suggestions
 
 ### Add Components to Existing Project
 
@@ -147,6 +190,11 @@ When running `cc-scaffold init`, you can choose how strictly Claude should follo
 ## Requirements
 
 - Node.js 18.0.0 or higher
+- Claude CLI (optional, required for `analyze` command)
+
+  ```bash
+  npm install -g @anthropic-ai/claude-code
+  ```
 
 ## License
 
