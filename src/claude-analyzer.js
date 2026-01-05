@@ -75,9 +75,9 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
 
     // Use command substitution to pass prompt as argument
     const command = `"${claudePath}" -p "$(cat "${tempFile}")"`;
-    const claude = spawn('sh', ['-c', command], {
+    const claude = spawn('bash', ['-c', command], {
       cwd: projectPath,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],  // ignore stdin - we don't need it
       env: { ...process.env },
     });
 
