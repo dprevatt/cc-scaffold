@@ -1,0 +1,43 @@
+{
+  "name": "cc-scaffold",
+  "version": "1.0.0",
+  "description": "Interactive CLI for scaffolding Claude Code skills, agents, and hooks with intelligent project analysis and recommendations",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "cc-scaffold": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "init": "node src/index.js init",
+    "add": "node src/index.js add",
+    "list": "node src/index.js list",
+    "validate": "node src/index.js validate"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "scaffold",
+    "cli",
+    "skills",
+    "agents",
+    "hooks",
+    "ai",
+    "developer-tools"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@clack/prompts": "^0.7.0",
+    "boxen": "^7.1.1",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "figlet": "^1.7.0",
+    "gradient-string": "^2.0.2",
+    "ora": "^8.0.1",
+    "picocolors": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
