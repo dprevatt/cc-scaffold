@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, exec } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -59,94 +59,46 @@ async function checkClaudeCLI() {
  * Shell out to Claude CLI with the analysis prompt
  */
 async function invokeClaude(prompt, projectPath, verbose = false, onProgress = null) {
-  return new Promise(async (resolve, reject) => {
-    // Write prompt to temp file to avoid command line length limits
-    // Escape special bash characters: backticks and dollar signs
-    const escapedPrompt = prompt.replace(/`/g, '\\`').replace(/\$/g, '\\$');
-    const tempFile = path.join(os.tmpdir(), `claude-prompt-${Date.now()}.txt`);
-    await fs.writeFile(tempFile, escapedPrompt, 'utf-8');
+  // Write prompt to temp file to avoid command line length limits
+  const tempFile = path.join(os.tmpdir(), `claude-prompt-${Date.now()}.txt`);
+  await fs.writeFile(tempFile, prompt, 'utf-8');
 
-    // Use claude CLI with -p for non-interactive output
-    const claudePath = getClaudePath();
+  const claudePath = getClaudePath();
+
+  if (verbose) {
+    console.log('\n[DEBUG] Invoking Claude with prompt from:', tempFile);
+    console.log('[DEBUG] Claude path:', claudePath);
+    console.log('[DEBUG] CWD:', projectPath);
+  }
+
+  try {
+    // Use execSync - async exec/spawn gets SIGTERM in some environments
+    const output = execSync(
+      `${claudePath} -p "$(cat '${tempFile}')"`,
+      {
+        cwd: projectPath,
+        env: { ...process.env },
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        timeout: 5 * 60 * 1000, // 5 minute timeout
+        shell: '/bin/bash',
+        encoding: 'utf-8',
+      }
+    );
 
     if (verbose) {
-      console.log('\n[DEBUG] Invoking Claude with prompt from:', tempFile);
-      console.log('[DEBUG] Claude path:', claudePath);
+      console.log('[DEBUG] Claude output:', output.length, 'chars');
     }
 
-    // Read the file and pass as argument - backticks are escaped in file
-    const command = `"${claudePath}" -p "$(cat "${tempFile}")"`;
-    const claude = spawn('bash', ['-c', command], {
-      cwd: projectPath,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
-    });
-
-    // Clean up temp file when done
-    const cleanup = () => {
-      fs.unlink(tempFile).catch(() => {});
-    };
-
-    let stdout = '';
-    let stderr = '';
-    let lastActivity = Date.now();
-    let charsReceived = 0;
-
-    claude.stdout.on('data', (data) => {
-      const text = data.toString();
-      stdout += text;
-      charsReceived += text.length;
-      lastActivity = Date.now();
-
-      if (verbose) {
-        process.stdout.write(data);
-      } else if (onProgress) {
-        onProgress(charsReceived, text);
-      }
-    });
-
-    claude.stderr.on('data', (data) => {
-      stderr += data.toString();
-      lastActivity = Date.now();
-    });
-
-    claude.on('close', (code) => {
-      cleanup();
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(`Claude exited with code ${code}: ${stderr}`));
-      }
-    });
-
-    claude.on('error', (err) => {
-      cleanup();
-      reject(new Error(`Failed to invoke Claude: ${err.message}`));
-    });
-
-    // Set a timeout of 5 minutes, but check for activity
-    const timeoutMs = 5 * 60 * 1000;
-    const activityCheckMs = 30 * 1000; // 30 seconds without activity = stalled
-
-    const checkActivity = setInterval(() => {
-      const idleTime = Date.now() - lastActivity;
-      if (idleTime > activityCheckMs && charsReceived === 0) {
-        // No output received and idle for 30+ seconds - likely stalled
-        clearInterval(checkActivity);
-        claude.kill();
-        cleanup();
-        const stderrInfo = stderr ? `\nStderr: ${stderr.slice(0, 500)}` : '';
-        reject(new Error(`Claude analysis appears stalled (no output received).${stderrInfo}\nTry running with --verbose or check if Claude CLI is working.`));
-      }
-    }, 10000);
-
-    setTimeout(() => {
-      clearInterval(checkActivity);
-      claude.kill();
-      cleanup();
-      reject(new Error(`Claude analysis timed out after 5 minutes. Received ${charsReceived} chars before timeout.`));
-    }, timeoutMs);
-  });
+    return output;
+  } catch (error) {
+    if (error.killed) {
+      throw new Error('Claude analysis timed out after 5 minutes');
+    }
+    throw new Error(`Claude failed: ${error.message}\n${error.stderr || ''}`);
+  } finally {
+    // Clean up temp file
+    fs.unlink(tempFile).catch(() => {});
+  }
 }
 
 /**
