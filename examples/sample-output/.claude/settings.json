@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "command": ".claude/hooks/session-context-loader.sh"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "command": ".claude/hooks/quality-gate.sh"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "command": ".claude/hooks/pre-commit-lint.sh"
+      },
+      {
+        "matcher": "Write",
+        "command": ".claude/hooks/secrets-scanner.sh"
+      },
+      {
+        "matcher": "Bash",
+        "command": ".claude/hooks/branch-protection.sh"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "command": ".claude/hooks/post-edit-format.sh"
+      }
+    ]
+  }
+}
