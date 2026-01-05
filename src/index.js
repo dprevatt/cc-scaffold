@@ -577,21 +577,12 @@ Claude will:
     return;
   }
 
-  const spinner = ora({
-    text: colors.secondary('Invoking Claude for deep analysis...'),
-    spinner: 'dots',
-  }).start();
+  // Show a static message since execSync blocks the event loop
+  console.log(colors.secondary('\n⏳ Analyzing with Claude... (this may take 1-2 minutes)\n'));
 
   try {
-    const analysis = await analyzeWithClaude(process.cwd(), {
-      ...options,
-      onProgress: (charsReceived) => {
-        spinner.text = colors.secondary(
-          `Analyzing with Claude... (${charsReceived.toLocaleString()} chars received)`
-        );
-      },
-    });
-    spinner.succeed(colors.success('Analysis complete!'));
+    const analysis = await analyzeWithClaude(process.cwd(), options);
+    console.log(colors.success('✓ Analysis complete!\n'));
 
     // Display results
     displayAnalysis(analysis);
@@ -684,7 +675,7 @@ Claude will:
       }
     }
   } catch (error) {
-    spinner.fail(colors.error('Analysis failed'));
+    console.error(colors.error('\n✖ Analysis failed'));
     console.error(colors.error(error.message));
 
     // Offer fallback
