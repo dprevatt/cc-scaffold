@@ -73,8 +73,8 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
       console.log('[DEBUG] Claude path:', claudePath);
     }
 
-    // Use shell to pipe the prompt file to claude
-    const command = `cat "${tempFile}" | "${claudePath}" -p`;
+    // Use command substitution to pass prompt as argument
+    const command = `"${claudePath}" -p "$(cat "${tempFile}")"`;
     const claude = spawn('sh', ['-c', command], {
       cwd: projectPath,
       stdio: ['pipe', 'pipe', 'pipe'],
