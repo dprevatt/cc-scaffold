@@ -36,7 +36,7 @@ export async function analyzeWithClaude(projectPath = process.cwd(), options = {
  */
 async function checkClaudeCLI() {
   return new Promise((resolve) => {
-    const proc = spawn('claude', ['--version'], { stdio: 'pipe', shell: true });
+    const proc = spawn('claude', ['--version'], { stdio: 'pipe', shell: false });
     proc.on('close', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));
   });
@@ -107,7 +107,8 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
         // No output received and idle for 30+ seconds - likely stalled
         clearInterval(checkActivity);
         claude.kill();
-        reject(new Error('Claude analysis appears stalled (no output received). Try running with --verbose or check if Claude CLI is working.'));
+        const stderrInfo = stderr ? `\nStderr: ${stderr.slice(0, 500)}` : '';
+        reject(new Error(`Claude analysis appears stalled (no output received).${stderrInfo}\nTry running with --verbose or check if Claude CLI is working.`));
       }
     }, 10000);
 
