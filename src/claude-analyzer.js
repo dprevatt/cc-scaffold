@@ -1,9 +1,21 @@
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import { skills as skillTemplates } from './templates/skills.js';
 import { agents as agentTemplates } from './templates/agents.js';
 import { hooks as hookTemplates } from './templates/hooks.js';
+
+/**
+ * Get the full path to the claude CLI
+ */
+function getClaudePath() {
+  try {
+    return execSync('which claude', { encoding: 'utf-8' }).trim();
+  } catch {
+    return 'claude'; // fallback
+  }
+}
 
 /**
  * Invoke Claude CLI for deep project analysis
@@ -36,7 +48,8 @@ export async function analyzeWithClaude(projectPath = process.cwd(), options = {
  */
 async function checkClaudeCLI() {
   return new Promise((resolve) => {
-    const proc = spawn('claude', ['--version'], { stdio: 'pipe', shell: false });
+    const claudePath = getClaudePath();
+    const proc = spawn(claudePath, ['--version'], { stdio: 'pipe', shell: false });
     proc.on('close', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));
   });
@@ -46,21 +59,32 @@ async function checkClaudeCLI() {
  * Shell out to Claude CLI with the analysis prompt
  */
 async function invokeClaude(prompt, projectPath, verbose = false, onProgress = null) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
+    // Write prompt to temp file to avoid command line length limits
+    const tempFile = path.join(os.tmpdir(), `claude-prompt-${Date.now()}.txt`);
+    await fs.writeFile(tempFile, prompt, 'utf-8');
+
     // Use claude CLI with -p for non-interactive output
-    // Pass prompt as the final argument
-    const args = ['-p', prompt];
+    // Read prompt from temp file via cat and pipe
+    const claudePath = getClaudePath();
 
     if (verbose) {
-      console.log('\n[DEBUG] Invoking Claude with prompt...\n');
+      console.log('\n[DEBUG] Invoking Claude with prompt from:', tempFile);
+      console.log('[DEBUG] Claude path:', claudePath);
     }
 
-    const claude = spawn('claude', args, {
+    // Use shell to pipe the prompt file to claude
+    const command = `cat "${tempFile}" | "${claudePath}" -p`;
+    const claude = spawn('sh', ['-c', command], {
       cwd: projectPath,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
-      shell: false,
     });
+
+    // Clean up temp file when done
+    const cleanup = () => {
+      fs.unlink(tempFile).catch(() => {});
+    };
 
     let stdout = '';
     let stderr = '';
@@ -86,6 +110,7 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
     });
 
     claude.on('close', (code) => {
+      cleanup();
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -94,6 +119,7 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
     });
 
     claude.on('error', (err) => {
+      cleanup();
       reject(new Error(`Failed to invoke Claude: ${err.message}`));
     });
 
@@ -107,6 +133,7 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
         // No output received and idle for 30+ seconds - likely stalled
         clearInterval(checkActivity);
         claude.kill();
+        cleanup();
         const stderrInfo = stderr ? `\nStderr: ${stderr.slice(0, 500)}` : '';
         reject(new Error(`Claude analysis appears stalled (no output received).${stderrInfo}\nTry running with --verbose or check if Claude CLI is working.`));
       }
@@ -115,6 +142,7 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
     setTimeout(() => {
       clearInterval(checkActivity);
       claude.kill();
+      cleanup();
       reject(new Error(`Claude analysis timed out after 5 minutes. Received ${charsReceived} chars before timeout.`));
     }, timeoutMs);
   });
