@@ -61,11 +61,12 @@ async function checkClaudeCLI() {
 async function invokeClaude(prompt, projectPath, verbose = false, onProgress = null) {
   return new Promise(async (resolve, reject) => {
     // Write prompt to temp file to avoid command line length limits
+    // Escape special bash characters: backticks and dollar signs
+    const escapedPrompt = prompt.replace(/`/g, '\\`').replace(/\$/g, '\\$');
     const tempFile = path.join(os.tmpdir(), `claude-prompt-${Date.now()}.txt`);
-    await fs.writeFile(tempFile, prompt, 'utf-8');
+    await fs.writeFile(tempFile, escapedPrompt, 'utf-8');
 
     // Use claude CLI with -p for non-interactive output
-    // Read prompt from temp file via cat and pipe
     const claudePath = getClaudePath();
 
     if (verbose) {
@@ -73,11 +74,11 @@ async function invokeClaude(prompt, projectPath, verbose = false, onProgress = n
       console.log('[DEBUG] Claude path:', claudePath);
     }
 
-    // Use command substitution to pass prompt as argument
+    // Read the file and pass as argument - backticks are escaped in file
     const command = `"${claudePath}" -p "$(cat "${tempFile}")"`;
     const claude = spawn('bash', ['-c', command], {
       cwd: projectPath,
-      stdio: ['ignore', 'pipe', 'pipe'],  // ignore stdin - we don't need it
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env },
     });
 
