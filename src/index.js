@@ -8,6 +8,7 @@
 import { Command } from 'commander';
 import * as p from '@clack/prompts';
 import ora from 'ora';
+import boxen from 'boxen';
 import {
   showBanner,
   sectionHeader,
@@ -30,6 +31,16 @@ import {
   addComponents,
   validateConfiguration,
 } from './generator.js';
+import { scanProject, formatScanResults } from './scanner.js';
+import { analyzeWithClaude, applyRecommendations, quickAudit } from './claude-analyzer.js';
+import {
+  mergeConfigurations,
+  loadExistingConfig,
+  backupExisting,
+  getDiffSummary,
+  formatDiffSummary,
+  listBackups,
+} from './merger.js';
 
 const program = new Command();
 
@@ -111,7 +122,7 @@ const enforcementLevels = [
 /**
  * Main init command - Interactive project setup
  */
-async function initCommand() {
+async function initCommand(options) {
   showBanner();
 
   // Check for cancellation
@@ -119,6 +130,69 @@ async function initCommand() {
     cancelled();
     process.exit(0);
   };
+
+  let prefilled = {
+    name: '',
+    projectType: 'general',
+    techStack: [],
+    architecture: [],
+    hasApi: false,
+  };
+
+  // ===== AUTO-SCAN (if --scan flag is provided) =====
+  if (options.scan) {
+    const spinner = ora({
+      text: colors.secondary('Scanning project...'),
+      spinner: 'dots',
+    }).start();
+
+    try {
+      prefilled = await scanProject(process.cwd());
+      spinner.succeed(
+        colors.success(
+          `Detected: ${prefilled.frameworks.length > 0 ? prefilled.frameworks.join(', ') : prefilled.projectType}`
+        )
+      );
+
+      // Show scan results
+      console.log(
+        boxen(formatScanResults(prefilled), {
+          title: `${icons.brain} Scan Results`,
+          padding: 1,
+          borderColor: 'cyan',
+          borderStyle: 'round',
+        })
+      );
+    } catch (e) {
+      spinner.warn('Scan completed with warnings');
+    }
+  }
+
+  // ===== CHECK FOR EXISTING .claude/ =====
+  if (prefilled.existingClaude) {
+    console.log();
+    const action = await p.select({
+      message: 'Existing .claude/ found. What would you like to do?',
+      options: [
+        { value: 'merge', label: `${icons.sparkles} Merge (keep customizations, add new)` },
+        { value: 'backup-replace', label: `${icons.package} Backup & Replace` },
+        { value: 'analyze', label: `${icons.brain} Analyze with Claude first` },
+        { value: 'cancel', label: `${icons.cross} Cancel` },
+      ],
+    });
+
+    if (p.isCancel(action) || action === 'cancel') {
+      onCancel();
+    }
+
+    if (action === 'analyze') {
+      // Redirect to analyze command
+      await analyzeCommand({ fix: false });
+      return;
+    }
+
+    prefilled.mergeStrategy = action;
+  }
 
   // ===== SECTION 1: Project Details =====
   sectionHeader('Project Details', icons.folder);
@@ -129,6 +203,7 @@ async function initCommand() {
         p.text({
           message: 'Project name',
           placeholder: 'my-awesome-project',
+          initialValue: prefilled.name || '',
           validate: (value) => {
             if (!value) return 'Project name is required';
             if (!/^[a-z0-9-_]+$/i.test(value))
@@ -153,18 +228,28 @@ async function initCommand() {
   // ===== SECTION 2: Technology Stack =====
   sectionHeader('Technology Stack', icons.gear);
 
+  // Pre-select project type from scan
+  const projectTypeInitial = projectTypes.find((t) => t.value === prefilled.projectType)
+    ? prefilled.projectType
+    : 'general';
+
   const projectType = await p.select({
     message: 'Project type',
     options: projectTypes,
+    initialValue: projectTypeInitial,
   });
 
   if (p.isCancel(projectType)) {
     onCancel();
   }
 
+  // Pre-select tech stack from scan
+  const techStackInitial = prefilled.techStack || [];
+
   const techStack = await p.multiselect({
     message: 'Tech stack (select all that apply)',
     options: techStackOptions,
+    initialValues: techStackInitial,
     required: false,
   });
 
@@ -172,9 +257,13 @@ async function initCommand() {
     onCancel();
   }
 
+  // Pre-select architecture from scan
+  const architectureInitial = prefilled.architecture || [];
+
   const architecture = await p.multiselect({
     message: 'Architecture patterns (select all that apply)',
     options: architectureOptions,
+    initialValues: architectureInitial,
     required: false,
   });
 
@@ -206,7 +295,7 @@ async function initCommand() {
 
   const hasApi = await p.confirm({
     message: 'Does the project expose an API?',
-    initialValue: false,
+    initialValue: prefilled.hasApi || false,
   });
 
   if (p.isCancel(hasApi)) {
@@ -398,6 +487,21 @@ async function initCommand() {
   // ===== SECTION 8: Generate Output =====
   sectionHeader('Generation', icons.rocket);
 
+  // Handle merge strategy if existing config
+  if (prefilled.mergeStrategy === 'backup-replace') {
+    const backupSpinner = ora({
+      text: colors.secondary('Backing up existing configuration...'),
+      spinner: 'dots',
+    }).start();
+
+    try {
+      await backupExisting(process.cwd());
+      backupSpinner.succeed(colors.success('Backup created'));
+    } catch (error) {
+      backupSpinner.warn('Could not create backup: ' + error.message);
+    }
+  }
+
   const generateSpinner = ora({
     text: colors.secondary('Generating Claude Code configuration...'),
     spinner: 'dots',
@@ -440,6 +544,387 @@ async function initCommand() {
     generateSpinner.fail(colors.error('Generation failed'));
     console.error(colors.error(error.message));
     process.exit(1);
+  }
+}
+
+/**
+ * Analyze command - Deep Claude-powered analysis
+ */
+async function analyzeCommand(options) {
+  showBanner();
+
+  console.log(
+    boxen(
+      `This will invoke Claude to deeply analyze your codebase.
+
+Claude will:
+  ${icons.folder} Read and understand your project structure
+  ${icons.gear} Examine existing .claude/ configuration
+  ${icons.target} Identify gaps and issues
+  ${icons.lightning} Provide intelligent recommendations`,
+      {
+        title: `${icons.brain} DEEP PROJECT ANALYSIS`,
+        padding: 1,
+        borderColor: 'magenta',
+        borderStyle: 'round',
+      }
+    )
+  );
+
+  const proceed = await p.confirm({ message: 'Proceed?', initialValue: true });
+  if (p.isCancel(proceed) || !proceed) {
+    cancelled();
+    return;
+  }
+
+  const spinner = ora({
+    text: colors.secondary('Invoking Claude for deep analysis...\nThis may take 30-60 seconds.'),
+    spinner: 'dots',
+  }).start();
+
+  try {
+    const analysis = await analyzeWithClaude(process.cwd(), options);
+    spinner.succeed(colors.success('Analysis complete!'));
+
+    // Display results
+    displayAnalysis(analysis);
+
+    if (analysis.recommendations?.length > 0) {
+      const action = await p.select({
+        message: 'What would you like to do?',
+        options: [
+          {
+            value: 'apply-all',
+            label: `${icons.rocket} Apply all ${analysis.recommendations.length} recommendations`,
+          },
+          { value: 'apply-high', label: `${icons.warning} Apply high priority only` },
+          { value: 'select', label: `${icons.gear} Select individually` },
+          { value: 'export', label: `${icons.file} Export report` },
+          { value: 'exit', label: `${icons.cross} Exit` },
+        ],
+      });
+
+      if (p.isCancel(action) || action === 'exit') {
+        return;
+      }
+
+      if (action === 'apply-all') {
+        const applySpinner = ora({
+          text: colors.secondary('Applying recommendations...'),
+          spinner: 'dots',
+        }).start();
+
+        const results = await applyRecommendations(analysis.recommendations);
+        applySpinner.succeed(colors.success('Recommendations applied!'));
+
+        const applied = results.filter((r) => r.applied).length;
+        const failed = results.filter((r) => !r.applied).length;
+
+        console.log(
+          colors.success(`\n  ${icons.check} Applied: ${applied}`) +
+            (failed > 0 ? colors.error(`  ${icons.cross} Failed: ${failed}`) : '')
+        );
+      } else if (action === 'apply-high') {
+        const highPriority = analysis.recommendations.filter((r) => r.priority === 'high');
+
+        if (highPriority.length === 0) {
+          console.log(colors.muted('\nNo high priority recommendations.'));
+          return;
+        }
+
+        const applySpinner = ora({
+          text: colors.secondary(`Applying ${highPriority.length} high priority recommendations...`),
+          spinner: 'dots',
+        }).start();
+
+        const results = await applyRecommendations(highPriority);
+        applySpinner.succeed(colors.success('High priority recommendations applied!'));
+
+        const applied = results.filter((r) => r.applied).length;
+        console.log(colors.success(`\n  ${icons.check} Applied: ${applied}`));
+      } else if (action === 'select') {
+        const recOptions = analysis.recommendations.map((r, i) => ({
+          value: i,
+          label: `[${r.action.toUpperCase()}] ${r.name}`,
+          hint: r.reason,
+        }));
+
+        const selected = await p.multiselect({
+          message: 'Select recommendations to apply',
+          options: recOptions,
+          required: false,
+        });
+
+        if (!p.isCancel(selected) && selected.length > 0) {
+          const toApply = selected.map((i) => analysis.recommendations[i]);
+
+          const applySpinner = ora({
+            text: colors.secondary(`Applying ${toApply.length} recommendations...`),
+            spinner: 'dots',
+          }).start();
+
+          const results = await applyRecommendations(toApply);
+          applySpinner.succeed(colors.success('Selected recommendations applied!'));
+
+          const applied = results.filter((r) => r.applied).length;
+          console.log(colors.success(`\n  ${icons.check} Applied: ${applied}`));
+        }
+      } else if (action === 'export') {
+        const fs = await import('fs/promises');
+        const reportPath = './claude-analysis-report.json';
+        await fs.writeFile(reportPath, JSON.stringify(analysis, null, 2));
+        console.log(colors.success(`\n${icons.check} Report exported to ${reportPath}`));
+      }
+    }
+  } catch (error) {
+    spinner.fail(colors.error('Analysis failed'));
+    console.error(colors.error(error.message));
+
+    // Offer fallback
+    const fallback = await p.confirm({
+      message: 'Fall back to file-based scanning?',
+      initialValue: true,
+    });
+
+    if (fallback && !p.isCancel(fallback)) {
+      const scanSpinner = ora({
+        text: colors.secondary('Scanning project files...'),
+        spinner: 'dots',
+      }).start();
+
+      const scan = await scanProject(process.cwd());
+      scanSpinner.succeed(colors.success('Scan complete!'));
+
+      console.log(
+        boxen(formatScanResults(scan), {
+          title: `${icons.folder} Scan Results`,
+          padding: 1,
+          borderColor: 'cyan',
+          borderStyle: 'round',
+        })
+      );
+    }
+  }
+}
+
+/**
+ * Audit command - Quick validation of existing config
+ */
+async function auditCommand() {
+  showBanner();
+
+  const spinner = ora({
+    text: colors.secondary('Auditing configuration...'),
+    spinner: 'dots',
+  }).start();
+
+  try {
+    const results = await quickAudit(process.cwd());
+    spinner.stop();
+
+    if (!results.exists) {
+      warningBox('No Configuration Found', 'No .claude/ directory found in this project.\n\nRun `cc-scaffold init` to create one.');
+      return;
+    }
+
+    if (results.issues.length === 0) {
+      successBox(
+        'Configuration Valid',
+        `${icons.check} No issues found!\n\nYour .claude/ configuration is properly set up.`
+      );
+      return;
+    }
+
+    // Display issues by type
+    const errors = results.issues.filter((i) => i.type === 'error');
+    const warnings = results.issues.filter((i) => i.type === 'warning');
+    const info = results.issues.filter((i) => i.type === 'info');
+
+    let output = '';
+
+    if (errors.length > 0) {
+      output += colors.error.bold('\nErrors:\n');
+      errors.forEach((e) => {
+        output += colors.error(`  ${icons.cross} ${e.message}\n`);
+      });
+    }
+
+    if (warnings.length > 0) {
+      output += colors.warning.bold('\nWarnings:\n');
+      warnings.forEach((w) => {
+        output += colors.warning(`  ${icons.warning} ${w.message}\n`);
+      });
+    }
+
+    if (info.length > 0) {
+      output += colors.muted.bold('\nInfo:\n');
+      info.forEach((i) => {
+        output += colors.muted(`  ${icons.info} ${i.message}\n`);
+      });
+    }
+
+    console.log(
+      boxen(output.trim(), {
+        title: `${icons.target} Audit Results`,
+        padding: 1,
+        borderColor: errors.length > 0 ? 'red' : warnings.length > 0 ? 'yellow' : 'cyan',
+        borderStyle: 'round',
+      })
+    );
+
+    console.log(
+      colors.muted(
+        `\nSummary: ${results.summary.errors} errors, ${results.summary.warnings} warnings, ${results.summary.info} info`
+      )
+    );
+  } catch (error) {
+    spinner.fail(colors.error('Audit failed'));
+    console.error(colors.error(error.message));
+    process.exit(1);
+  }
+}
+
+/**
+ * Display analysis results
+ */
+function displayAnalysis(analysis) {
+  if (analysis.parseError) {
+    console.log('\nClaude\'s analysis (raw):\n');
+    console.log(analysis.raw);
+    return;
+  }
+
+  // Project Summary
+  if (analysis.projectSummary) {
+    console.log(
+      boxen(analysis.projectSummary, {
+        title: `${icons.folder} PROJECT UNDERSTANDING`,
+        padding: 1,
+        borderColor: 'cyan',
+        borderStyle: 'round',
+      })
+    );
+  }
+
+  // Tech Stack
+  if (analysis.techStack) {
+    let techInfo = '';
+    if (analysis.techStack.languages?.length) {
+      techInfo += `Languages: ${analysis.techStack.languages.join(', ')}\n`;
+    }
+    if (analysis.techStack.frameworks?.length) {
+      techInfo += `Frameworks: ${analysis.techStack.frameworks.join(', ')}\n`;
+    }
+    if (analysis.techStack.databases?.length) {
+      techInfo += `Databases: ${analysis.techStack.databases.join(', ')}\n`;
+    }
+    if (analysis.techStack.tools?.length) {
+      techInfo += `Tools: ${analysis.techStack.tools.join(', ')}\n`;
+    }
+
+    if (techInfo) {
+      console.log(
+        boxen(techInfo.trim(), {
+          title: `${icons.gear} TECH STACK`,
+          padding: 1,
+          borderColor: 'blue',
+          borderStyle: 'round',
+        })
+      );
+    }
+  }
+
+  // Existing Config Assessment
+  if (analysis.existingConfig?.hasClaudeDir) {
+    let configStatus = '';
+
+    for (const skill of analysis.existingConfig.skills || []) {
+      const icon = skill.status === 'good' ? icons.check : skill.status === 'needs-update' ? icons.warning : icons.cross;
+      configStatus += `${icon} ${skill.name} - ${skill.notes}\n`;
+    }
+
+    for (const agent of analysis.existingConfig.agents || []) {
+      const icon = agent.status === 'good' ? icons.check : agent.status === 'needs-update' ? icons.warning : icons.cross;
+      configStatus += `${icon} ${agent.name} - ${agent.notes}\n`;
+    }
+
+    for (const hook of analysis.existingConfig.hooks || []) {
+      const icon = hook.status === 'good' ? icons.check : hook.status === 'needs-update' ? icons.warning : icons.cross;
+      configStatus += `${icon} ${hook.name} - ${hook.notes}\n`;
+    }
+
+    if (configStatus) {
+      console.log(
+        boxen(configStatus.trim(), {
+          title: `${icons.file} EXISTING CONFIGURATION`,
+          padding: 1,
+          borderColor: 'yellow',
+          borderStyle: 'round',
+        })
+      );
+    }
+  }
+
+  // Recommendations
+  if (analysis.recommendations?.length > 0) {
+    let recText = '';
+
+    const byPriority = { high: [], medium: [], low: [] };
+    for (const rec of analysis.recommendations) {
+      byPriority[rec.priority || 'medium'].push(rec);
+    }
+
+    if (byPriority.high.length) {
+      recText += colors.error.bold('HIGH PRIORITY:\n');
+      byPriority.high.forEach((r, i) => {
+        recText += `  ${i + 1}. [${r.action.toUpperCase()}] ${r.name}\n`;
+        recText += `     ${colors.muted(r.reason)}\n`;
+      });
+    }
+
+    if (byPriority.medium.length) {
+      recText += colors.warning.bold('\nMEDIUM PRIORITY:\n');
+      byPriority.medium.forEach((r, i) => {
+        recText += `  ${i + 1}. [${r.action.toUpperCase()}] ${r.name}\n`;
+        recText += `     ${colors.muted(r.reason)}\n`;
+      });
+    }
+
+    if (byPriority.low.length) {
+      recText += colors.muted.bold('\nLOW PRIORITY:\n');
+      byPriority.low.forEach((r, i) => {
+        recText += `  ${i + 1}. [${r.action.toUpperCase()}] ${r.name}\n`;
+        recText += `     ${colors.muted(r.reason)}\n`;
+      });
+    }
+
+    console.log(
+      boxen(recText.trim(), {
+        title: `${icons.lightning} RECOMMENDATIONS`,
+        padding: 1,
+        borderColor: 'green',
+        borderStyle: 'round',
+      })
+    );
+  }
+
+  // Custom Component Suggestions
+  if (analysis.customComponentSuggestions?.length > 0) {
+    let suggestText = '';
+    analysis.customComponentSuggestions.forEach((s) => {
+      suggestText += `${icons.sparkles} ${s.name} (${s.type})\n`;
+      suggestText += `   ${s.description}\n`;
+      suggestText += `   ${colors.muted(s.reason)}\n\n`;
+    });
+
+    console.log(
+      boxen(suggestText.trim(), {
+        title: `${icons.magic} CUSTOM COMPONENT SUGGESTIONS`,
+        padding: 1,
+        borderColor: 'magenta',
+        borderStyle: 'round',
+      })
+    );
   }
 }
 
@@ -598,6 +1083,7 @@ program
 program
   .command('init')
   .description('Interactive project setup')
+  .option('--scan', 'Auto-detect project characteristics before wizard')
   .action(initCommand);
 
 program
@@ -615,9 +1101,21 @@ program
   .description('Validate current configuration')
   .action(validateCommand);
 
+program
+  .command('analyze')
+  .description('Deep Claude-powered analysis of project')
+  .option('--fix', 'Auto-apply recommendations')
+  .option('--verbose', 'Show detailed output')
+  .action(analyzeCommand);
+
+program
+  .command('audit')
+  .description('Quick validation of existing .claude/ configuration')
+  .action(auditCommand);
+
 // Default to init if no command specified
 if (process.argv.length <= 2) {
-  initCommand();
+  initCommand({ scan: false });
 } else {
   program.parse();
 }
